@@ -138,5 +138,6 @@ save_band_signals(signals, sample_rate, input_file)
 for band_num, (low_freq, high_freq) in ranges.items():
     print(f"Band {band_num}: {low_freq:.1f} Hz - {high_freq:.1f} Hz")
 
+# Combine bands and save (to verify they are split correctly)
 combined_band = combine_bands(signals)
 save_band_signals([combined_band], sample_rate, input_file, "output", "combined_bands.wav")
