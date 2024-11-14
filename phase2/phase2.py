@@ -152,8 +152,8 @@ if __name__ == "__main__":
         save_band_signals([combined_band], sr, fp, "output", "bandpass_combined.wav")
 
         # Plot the lowest and highest frequency channel outputs
-        plot_signal(filtered_signals[0], sr, f"Lowest frequency channel output_{fp}")
-        plot_signal(filtered_signals[-1], sr, f"Highest frequency channel output_{fp}")
+        plot_signal(filtered_signals[0], sr, f"output/Lowest frequency channel output_{fp}")
+        plot_signal(filtered_signals[-1], sr, f"output/Highest frequency channel output_{fp}")
 
         # Rectify the filtered signals
         rectified_signals = rectify_signals(filtered_signals)
@@ -163,9 +163,9 @@ if __name__ == "__main__":
         envelope_signals = apply_lowpass_filter(rectified_signals, b_lpf, a_lpf)
 
         # Plot the extracted envelope of the lowest and highest frequency channels
-        plot_signal(envelope_signals[0], sr, f"Extracted envelope of the lowest frequency channel_{fp}")
-        plot_signal(envelope_signals[-1], sr, f"Extracted envelope of the highest frequency channel_{fp}")
+        plot_signal(envelope_signals[0], sr, f"output/Extracted envelope of the lowest frequency channel_{fp}")
+        plot_signal(envelope_signals[-1], sr, f"output/Extracted envelope of the highest frequency channel_{fp}")
 
         # Save the processed audio outputs (optional)
-        save_audio(envelope_signals[0], sr, f"envelope_lowest_channel_{fp}")
-        save_audio(envelope_signals[-1], sr, f"envelope_highest_channel_{fp}")
+        save_audio(envelope_signals[0], sr, f"output/envelope_lowest_channel_{fp}")
+        save_audio(envelope_signals[-1], sr, f"output/envelope_highest_channel_{fp}")
