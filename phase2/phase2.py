@@ -405,7 +405,7 @@ def process_and_analyze_ci(input_file: str, num_bands: int) -> Dict:
     return metrics
 
 
-def main_ci_analysis(input_file: str, band_range: range = range(2, 23, 2)):
+def main_ci_analysis(input_file: str, band_range: range = range(2, 31, 2)):
     """
     Run CI simulation analysis for different numbers of frequency bands
     """
