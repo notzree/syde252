@@ -6,20 +6,20 @@ import matplotlib.pyplot as plt
 from scipy.signal import butter, lfilter
 import os
 
-
-# Phase 1 functions
+# Read sound file and compress to 16kHz
 def read_and_resample(file_path):
+    # Extract file path and sampling rate of sound file
     y, sr = librosa.load(file_path, sr=None)
     channels = "Stereo" if y.ndim > 1 and y.shape[0] == 2 else "Mono"
     print(f"File: {file_path}")
     print(f"Channels: {channels}")
     print(f"Original sampling rate: {sr} Hz")
+    # Resample to 16kHz if original samplign rate is not 16kHz
     if sr != 16000:
         y = librosa.resample(y, orig_sr=sr, target_sr=16000)
         sr = 16000
         print("Resampled to 16 kHz")
     return y, sr
-
 
 def save_audio(y, sr, file_path):
     # Extract the base name to avoid directory paths in the output
@@ -29,12 +29,11 @@ def save_audio(y, sr, file_path):
     sf.write(output_path, y, sr)
     print(f"Saved audio to {output_path}")
 
-
-# Phase 2 functions
+# Create 8 bandpass filters from 100Hz to 8kHz
 def create_bandpass_filters(num_bands, fs):
     # Define frequency range from 100 Hz to slightly below the Nyquist limit (Nyquist = fs / 2)
-    nyquist = fs / 2
-    max_freq = 0.99 * nyquist  # Ensure the highest frequency is below the Nyquist limit
+    nyquist = fs / 2 # 8kHz
+    max_freq = 0.99 * nyquist  # Ensure the highest frequency is below the Nyquist limit (8kHz)
     freq_range = np.linspace(100, max_freq, num_bands + 1)
     filters = []
 
