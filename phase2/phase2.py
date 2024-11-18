@@ -1,7 +1,18 @@
+"""
+Python 3.12.6
+
+To install dependencies run either:
+pip install librosa matplotlib numpy soundfile scipy
+or
+pip install -r requirements.txt (requires python 3.12.6 for compatibility)
+
+To run:
+python phase2.py
+"""
+
 import librosa
 import soundfile as sf
 import numpy as np
-from scipy.io import wavfile
 import matplotlib.pyplot as plt
 from scipy.signal import butter, lfilter
 import os
@@ -22,10 +33,8 @@ def read_and_resample(file_path):
     return y, sr
 
 def save_audio(y, sr, file_path):
-    # Extract the base name to avoid directory paths in the output
     base_name = os.path.basename(file_path)
     output_path = "processed_" + base_name
-
     sf.write(output_path, y, sr)
     print(f"Saved audio to {output_path}")
 
@@ -73,9 +82,7 @@ def apply_lowpass_filter(signals, b, a):
     return [lfilter(b, a, signal) for signal in signals]
 
 
-# Plotting functions
 def plot_signal(y, sr, title, xlabel="Sample Number", ylabel="Amplitude"):
-    # Ensure the directory for saving the plot exists
     output_dir = os.path.dirname(title)
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -91,80 +98,25 @@ def plot_signal(y, sr, title, xlabel="Sample Number", ylabel="Amplitude"):
     plt.close()
 
 
-def save_band_signals(signals, sample_rate, input_file, output_dir="output", input_name=""):
-    """
-    Save each frequency band as a separate WAV file
-    """
-    # Create output directory if it doesn't exist
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Get base filename without extension and directory
-    base_name = os.path.splitext(os.path.basename(input_file))[0]
-
-    # Save each band
-    for i, signal in enumerate(signals):
-        # Scale the signal to 16-bit integer range
-        scaled_signal = np.int16(signal * 32767)
-
-        # Generate output filename
-        name = f"{base_name}_band_{i}.wav" if not input_name else input_name
-        output_file = os.path.join(output_dir, name)
-
-        # Save the file
-        wavfile.write(output_file, sample_rate, scaled_signal)
-        print(f"Saved band {i} to {output_file}")
-
-
-def combine_bands(band_signals):
-    """
-    Combine multiple frequency bands back into a single signal
-
-    Parameters:
-    band_signals: List of numpy arrays containing the band-limited signals
-
-    Returns:
-    Combined audio signal
-    """
-    return np.sum(band_signals, axis=0)
-
-
 if __name__ == "__main__":
-    # Configuration
-    files = ["../data/fox_white_noise.wav"]  # Add your audio file paths here
+    files = ["../data/fox_white_noise.wav"]  # Add other audio files here
     num_bands = 8
-    cutoff_freq = 400  # Hz
+    cutoff_freq = 400  # hz
 
     for fp in files:
-        # Phase 1: Read and resample audio
         y, sr = read_and_resample(fp)
-
-        # Phase 2: Bandpass filter bank creation
         filters = create_bandpass_filters(num_bands, sr)
-
-        # Apply bandpass filters to the audio signal
         filtered_signals = apply_filters(y, filters)
 
-        save_band_signals(filtered_signals, sr, fp, "bandpass_output")
-
-        # Combine bands and save (to verify they are split correctly)
-        combined_band = combine_bands(filtered_signals)
-        save_band_signals([combined_band], sr, fp, "output", "bandpass_combined.wav")
-
-        # Plot the lowest and highest frequency channel outputs
-        plot_signal(filtered_signals[0], sr, f"output/Lowest frequency channel output_{fp}")
-        plot_signal(filtered_signals[-1], sr, f"output/Highest frequency channel output_{fp}")
-
-        # Rectify the filtered signals
+        # Envelope extraction
         rectified_signals = rectify_signals(filtered_signals)
-
-        # Create and apply a lowpass filter for envelope extraction
         b_lpf, a_lpf = create_lowpass_filter(cutoff_freq, sr)
         envelope_signals = apply_lowpass_filter(rectified_signals, b_lpf, a_lpf)
 
-        # Plot the extracted envelope of the lowest and highest frequency channels
+        # Plot envelopes
         plot_signal(envelope_signals[0], sr, f"output/Extracted envelope of the lowest frequency channel_{fp}")
         plot_signal(envelope_signals[-1], sr, f"output/Extracted envelope of the highest frequency channel_{fp}")
 
-        # Save the processed audio outputs (optional)
-        save_audio(envelope_signals[0], sr, f"output/envelope_lowest_channel_{fp}")
-        save_audio(envelope_signals[-1], sr, f"output/envelope_highest_channel_{fp}")
+        # Plot low/high freq output
+        plot_signal(filtered_signals[0], sr, f"output/Lowest frequency channel output_{fp}")
+        plot_signal(filtered_signals[-1], sr, f"output/Highest frequency channel output_{fp}")
