@@ -25,7 +25,7 @@ def read_and_resample(file_path):
     print(f"File: {file_path}")
     print(f"Channels: {channels}")
     print(f"Original sampling rate: {sr} Hz")
-    # Resample to 16kHz if original samplign rate is not 16kHz
+    # Resample to 16kHz if original sampling rate is not 16kHz
     if sr != 16000:
         y = librosa.resample(y, orig_sr=sr, target_sr=16000)
         sr = 16000
@@ -60,7 +60,7 @@ def create_bandpass_filters(num_bands, fs):
 
     return filters
 
-
+# Apply bandpass filters to input signals
 def apply_filters(y, filters):
     filtered_signals = []
     for b, a in filters:
@@ -68,20 +68,20 @@ def apply_filters(y, filters):
         filtered_signals.append(filtered_signal)
     return filtered_signals
 
-
+# Absolute value the filtered signals to rectify
 def rectify_signals(filtered_signals):
     return [np.abs(signal) for signal in filtered_signals]
 
-
+# Create lowpass filter with cutoff frequency of
 def create_lowpass_filter(cutoff_freq, fs):
     b, a = butter(N=4, Wn=cutoff_freq / (fs / 2), btype="low")
     return b, a
 
-
+# Create 400Hz lowpass filter
 def apply_lowpass_filter(signals, b, a):
     return [lfilter(b, a, signal) for signal in signals]
 
-
+# Plot and save envelope signals and lowest and highest frequency channels
 def plot_signal(y, sr, title, xlabel="Sample Number", ylabel="Amplitude"):
     output_dir = os.path.dirname(title)
     if output_dir and not os.path.exists(output_dir):
@@ -103,6 +103,7 @@ if __name__ == "__main__":
     num_bands = 8
     cutoff_freq = 400  # hz
 
+    # Loop through input sound files
     for fp in files:
         y, sr = read_and_resample(fp)
         filters = create_bandpass_filters(num_bands, sr)
