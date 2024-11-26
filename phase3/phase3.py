@@ -18,7 +18,7 @@ from numpy.typing import NDArray
 from scipy.io import wavfile
 import os
 from abc import ABC, abstractmethod
-
+from metrics import evaluate_metrics
 
 class System(ABC):
     @abstractmethod
@@ -142,7 +142,7 @@ def save_band_signals(signals, sample_rate, input_file, output_dir="output", inp
 
 
 if __name__ == "__main__":
-    files = ["../data/fox_white_noise.wav"]  # Add other audio files here
+    files = ["../data/fox_white_noise.wav"]
     num_bands = 8
     cutoff_freq = 400  # hz
     for fp in files:
@@ -151,15 +151,22 @@ if __name__ == "__main__":
 
         # Process the input signal through each channel
         processed_signals = [channel.pass_signal(y) for channel in channels]
-        save_band_signals(processed_signals, sr, fp, "phase3_output")
-        # Add all processed signals together
         combined_signal = np.sum(processed_signals, axis=0)
 
+        # Normalize the combined signal
         max_abs_value = np.max(np.abs(combined_signal))
         if max_abs_value == 0:
-            normalized_signal = combined_signal  # Prevent division by zero
-        normalized_signal = combined_signal / max_abs_value
-        save_band_signals([normalized_signal], sr, fp, "phase3_combined_output_2khz")
+            normalized_signal = combined_signal
+        else:
+            normalized_signal = combined_signal / max_abs_value
 
-        # You can now use the combined_signal for further processing or output
-        print(f"Combined and normalized signal shape: {normalized_signal.shape}")
+        # Calculate metrics
+        metrics = evaluate_metrics(y, normalized_signal, sr)
+
+        print(f"Signal-to-Noise Ratio: {metrics['snr']:.2f} dB")
+        print(f"MFCC Similarity (MSE): {metrics['mfcc_similarity']:.4f}")
+        print(f"Frequency Representation Score: {metrics['freq_representation']:.4f}")
+        print(f"Processing Time: {metrics['processing_time']:.4f} seconds")
+
+        # Save the processed signal
+        save_band_signals([normalized_signal], sr, fp, "phase3_combined_output_2khz")
