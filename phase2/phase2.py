@@ -304,7 +304,8 @@ def analyze_ci_performance(
 
     # 4. Spectral Coverage
     spectral_metrics = analyze_spectral_coverage(filtered_signals, sr)
-    metrics.update(spectral_metrics)
+    metrics["spectral_coverage"] = spectral_metrics
+    # metrics.update(spectral_metrics)
 
     return metrics
 
@@ -367,17 +368,98 @@ def analyze_spectral_coverage(filtered_signals: List[np.ndarray], sr: int) -> Di
         "consonants": (2000, 8000),  # Important for consonant discrimination
     }
 
-    for i, signal in enumerate(filtered_signals):
+    # Calculate combined coverage across all bands
+    num_freq_points = 1000  # Number of points for frequency analysis
+    freq_axis = np.linspace(0, sr / 2, num_freq_points)
+    total_coverage = np.zeros(num_freq_points)
+
+    for signal in filtered_signals:
         # Calculate power spectrum
         freqs, psd = scipy.signal.welch(signal, sr, nperseg=min(len(signal), sr))
 
-        # Calculate power in each speech range
-        for range_name, (low, high) in speech_ranges.items():
-            mask = (freqs >= low) & (freqs <= high)
-            power = np.mean(psd[mask]) if np.any(mask) else 0
-            metrics[f"power_band_{i}_{range_name}"] = power
+        # Interpolate to common frequency axis
+        interpolated_psd = np.interp(freq_axis, freqs, psd)
+
+        # Add to total coverage (using log scale to better represent perception)
+        total_coverage += np.log10(interpolated_psd + 1e-10)
+
+    # Analyze coverage for each speech range
+    for range_name, (low, high) in speech_ranges.items():
+        # Calculate coverage metrics within range
+        range_mask = (freq_axis >= low) & (freq_axis <= high)
+        range_coverage = total_coverage[range_mask]
+
+        if len(range_coverage) > 0:
+            metrics[f"{range_name}_mean_coverage"] = np.mean(range_coverage)
+            metrics[f"{range_name}_std_coverage"] = np.std(range_coverage)
+
+            # Calculate coverage uniformity (lower std/mean ratio is more uniform)
+            metrics[f"{range_name}_uniformity"] = metrics[f"{range_name}_std_coverage"] / (
+                metrics[f"{range_name}_mean_coverage"] + 1e-10
+            )
+
+            # Calculate percentage of range with significant coverage
+            significant_coverage = range_coverage > (np.max(range_coverage) - 20)  # -20dB threshold
+            metrics[f"{range_name}_coverage_percentage"] = np.mean(significant_coverage) * 100
+
+    # Calculate overall metrics
+    metrics["total_frequency_range"] = freq_axis[-1] - freq_axis[0]
+
+    # Calculate gaps in coverage
+    threshold = np.max(total_coverage) - 20  # -20dB threshold
+    gaps = total_coverage < threshold
+    gap_ranges = find_gaps(freq_axis[gaps], min_gap_size=100)  # gaps larger than 100Hz
+    metrics["number_of_gaps"] = len(gap_ranges)
+    metrics["total_gap_width"] = sum(stop - start for start, stop in gap_ranges)
+
+    # Calculate overlap between adjacent bands
+    overlap_metric = calculate_band_overlap(filtered_signals, sr)
+    metrics["band_overlap"] = overlap_metric
 
     return metrics
+
+
+def find_gaps(freq_points: np.ndarray, min_gap_size: float) -> List[Tuple[float, float]]:
+    """
+    Find continuous gaps in frequency coverage above a minimum size.
+    """
+    if len(freq_points) == 0:
+        return []
+
+    gaps = []
+    gap_start = freq_points[0]
+    prev_freq = freq_points[0]
+
+    for freq in freq_points[1:]:
+        if freq - prev_freq > min_gap_size:
+            gaps.append((gap_start, prev_freq))
+            gap_start = freq
+        prev_freq = freq
+
+    gaps.append((gap_start, prev_freq))
+    return gaps
+
+
+def calculate_band_overlap(filtered_signals: List[np.ndarray], sr: int) -> float:
+    """
+    Calculate average overlap between adjacent frequency bands.
+    """
+    overlaps = []
+
+    for i in range(len(filtered_signals) - 1):
+        freqs1, psd1 = scipy.signal.welch(filtered_signals[i], sr)
+        freqs2, psd2 = scipy.signal.welch(filtered_signals[i + 1], sr)
+
+        # Interpolate to common frequency axis
+        common_freqs = np.linspace(0, sr / 2, 1000)
+        psd1_interp = np.interp(common_freqs, freqs1, psd1)
+        psd2_interp = np.interp(common_freqs, freqs2, psd2)
+
+        # Calculate overlap using normalized cross-correlation
+        overlap = np.sum(psd1_interp * psd2_interp) / np.sqrt(np.sum(psd1_interp**2) * np.sum(psd2_interp**2))
+        overlaps.append(overlap)
+
+    return np.mean(overlaps) if overlaps else 0.0
 
 
 def process_and_analyze_ci(input_file: str, num_bands: int) -> Dict:
@@ -395,8 +477,12 @@ def process_and_analyze_ci(input_file: str, num_bands: int) -> Dict:
     b_lpf, a_lpf = create_lowpass_filter(400, sr)  # 400 Hz cutoff for envelope
     envelope_signals = apply_lowpass_filter(rectified_signals, b_lpf, a_lpf)
 
-    # Analyze performance
+    # Get original metrics
     metrics = analyze_ci_performance(filtered_signals, envelope_signals, y, sr)
+
+    # Add spectral coverage metrics
+    spectral_metrics = analyze_spectral_coverage(filtered_signals, sr)
+    metrics.update(spectral_metrics)
 
     # Add basic configuration info to metrics
     metrics["num_bands"] = num_bands
@@ -430,28 +516,104 @@ def main_ci_analysis(input_file: str, band_range: range = range(2, 31, 2)):
 
 def plot_ci_metrics(df: pd.DataFrame):
     """
-    Create visualization of key CI simulation metrics
+    Create visualization of key CI simulation metrics including detailed spectral coverage analysis
     """
-    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-    fig.suptitle("CI Simulation Performance Metrics vs Number of Frequency Bands")
+    fig = plt.figure(figsize=(20, 15))
+    gs = plt.GridSpec(3, 2, figure=fig)
+    fig.suptitle("CI Simulation Performance Metrics vs Number of Frequency Bands", fontsize=16, y=0.95)
 
-    # Plot key metrics
-    metrics_to_plot = [
-        ("mean_envelope_correlation", "Mean Envelope Correlation"),
-        ("channel_independence", "Channel Independence"),
-        ("mean_modulation_index", "Mean Modulation Index"),
-    ]
+    # 1. Original metrics plot
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.plot(df["num_bands"], df["mean_envelope_correlation"], "o-", label="Envelope Correlation")
+    ax1.plot(df["num_bands"], df["channel_independence"], "s-", label="Channel Independence")
+    ax1.set_xlabel("Number of Bands")
+    ax1.set_ylabel("Correlation")
+    ax1.grid(True)
+    ax1.legend()
+    ax1.set_title("Signal Processing Metrics")
 
-    for i, (metric, title) in enumerate(metrics_to_plot):
-        ax = axes.flat[i]
-        ax.plot(df["num_bands"], df[metric], "o-")
-        ax.set_xlabel("Number of Bands")
-        ax.set_ylabel(title)
-        ax.grid(True)
+    # 2. Modulation Index plot
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.plot(df["num_bands"], df["mean_modulation_index"], "o-", color="purple")
+    ax2.set_xlabel("Number of Bands")
+    ax2.set_ylabel("Mean Modulation Index")
+    ax2.grid(True)
+    ax2.set_title("Modulation Index")
+
+    # 3. Speech Range Coverage plot
+    ax3 = fig.add_subplot(gs[1, :])
+    speech_ranges = ["f0", "f1", "f2", "consonants"]
+    for range_name in speech_ranges:
+        coverage_col = f"{range_name}_coverage_percentage"
+        if coverage_col in df.columns:
+            ax3.plot(df["num_bands"], df[coverage_col], "o-", label=f"{range_name}")
+    ax3.set_xlabel("Number of Bands")
+    ax3.set_ylabel("Coverage Percentage")
+    ax3.grid(True)
+    ax3.legend()
+    ax3.set_title("Speech Range Coverage")
+
+    # 4. Coverage Gaps and Overlap
+    ax4 = fig.add_subplot(gs[2, 0])
+    ax4.plot(df["num_bands"], df["number_of_gaps"], "o-", label="Number of Gaps", color="red")
+    ax4.set_xlabel("Number of Bands")
+    ax4.set_ylabel("Number of Gaps", color="red")
+    ax4.grid(True)
+    ax4.tick_params(axis="y", labelcolor="red")
+
+    ax4_twin = ax4.twinx()
+    ax4_twin.plot(df["num_bands"], df["total_gap_width"], "s-", label="Total Gap Width", color="blue")
+    ax4_twin.set_ylabel("Total Gap Width (Hz)", color="blue")
+    ax4_twin.tick_params(axis="y", labelcolor="blue")
+
+    lines1, labels1 = ax4.get_legend_handles_labels()
+    lines2, labels2 = ax4_twin.get_legend_handles_labels()
+    ax4.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
+    ax4.set_title("Coverage Gaps Analysis")
+
+    # 5. Coverage Uniformity
+    ax5 = fig.add_subplot(gs[2, 1])
+    for range_name in speech_ranges:
+        uniformity_col = f"{range_name}_uniformity"
+        if uniformity_col in df.columns:
+            ax5.plot(df["num_bands"], df[uniformity_col], "o-", label=f"{range_name}")
+    ax5.set_xlabel("Number of Bands")
+    ax5.set_ylabel("Coverage Uniformity")
+    ax5.grid(True)
+    ax5.legend()
+    ax5.set_title("Coverage Uniformity by Speech Range")
 
     plt.tight_layout()
-    plt.savefig("ci_simulation_metrics.png")
+    plt.savefig("ci_simulation_metrics.png", dpi=300, bbox_inches="tight")
     plt.close()
+
+
+# def plot_ci_metrics(df: pd.DataFrame):
+#     """
+#     Create visualization of key CI simulation metrics
+#     """
+#     fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+#     fig.suptitle("CI Simulation Performance Metrics vs Number of Frequency Bands")
+
+#     # Plot key metrics
+#     metrics_to_plot = [
+#         ("mean_envelope_correlation", "Mean Envelope Correlation"),
+#         ("channel_independence", "Channel Independence"),
+#         ("mean_modulation_index", "Mean Modulation Index"),
+#         ("tmtf_data", "TMTF Data"),
+#         ("spectral_coverage", "Spectral Coverage"),
+#     ]
+
+#     for i, (metric, title) in enumerate(metrics_to_plot):
+#         ax = axes.flat[i]
+#         ax.plot(df["num_bands"], df[metric], "o-")
+#         ax.set_xlabel("Number of Bands")
+#         ax.set_ylabel(title)
+#         ax.grid(True)
+
+#     plt.tight_layout()
+#     plt.savefig("ci_simulation_metrics.png")
+#     plt.close()
 
 
 if __name__ == "__main__":
