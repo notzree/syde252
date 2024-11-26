@@ -17,20 +17,20 @@ import matplotlib.pyplot as plt
 from scipy.signal import butter, lfilter
 import os
 
-
-# Read + resample audio
+# Read sound file and compress to 16kHz
 def read_and_resample(file_path):
+    # Extract file path and sampling rate of sound file
     y, sr = librosa.load(file_path, sr=None)
     channels = "Stereo" if y.ndim > 1 and y.shape[0] == 2 else "Mono"
     print(f"File: {file_path}")
     print(f"Channels: {channels}")
     print(f"Original sampling rate: {sr} Hz")
+    # Resample to 16kHz if original sampling rate is not 16kHz
     if sr != 16000:
         y = librosa.resample(y, orig_sr=sr, target_sr=16000)
         sr = 16000
         print("Resampled to 16 kHz")
     return y, sr
-
 
 def save_audio(y, sr, file_path):
     base_name = os.path.basename(file_path)
@@ -38,12 +38,11 @@ def save_audio(y, sr, file_path):
     sf.write(output_path, y, sr)
     print(f"Saved audio to {output_path}")
 
-
-# Phase 2 functions
+# Create 8 bandpass filters from 100Hz to 8kHz
 def create_bandpass_filters(num_bands, fs):
     # Define frequency range from 100 Hz to slightly below the Nyquist limit (Nyquist = fs / 2)
-    nyquist = fs / 2
-    max_freq = 0.99 * nyquist  # Ensure the highest frequency is below the Nyquist limit
+    nyquist = fs / 2 # 8kHz
+    max_freq = 0.99 * nyquist  # Ensure the highest frequency is below the Nyquist limit (8kHz)
     freq_range = np.linspace(100, max_freq, num_bands + 1)
     filters = []
 
@@ -61,7 +60,7 @@ def create_bandpass_filters(num_bands, fs):
 
     return filters
 
-
+# Apply bandpass filters to input signals
 def apply_filters(y, filters):
     filtered_signals = []
     for b, a in filters:
@@ -69,20 +68,20 @@ def apply_filters(y, filters):
         filtered_signals.append(filtered_signal)
     return filtered_signals
 
-
+# Absolute value the filtered signals to rectify
 def rectify_signals(filtered_signals):
     return [np.abs(signal) for signal in filtered_signals]
 
-
+# Create lowpass filter with cutoff frequency of
 def create_lowpass_filter(cutoff_freq, fs):
     b, a = butter(N=4, Wn=cutoff_freq / (fs / 2), btype="low")
     return b, a
 
-
+# Create 400Hz lowpass filter
 def apply_lowpass_filter(signals, b, a):
     return [lfilter(b, a, signal) for signal in signals]
 
-
+# Plot and save envelope signals and lowest and highest frequency channels
 def plot_signal(y, sr, title, xlabel="Sample Number", ylabel="Amplitude"):
     output_dir = os.path.dirname(title)
     if output_dir and not os.path.exists(output_dir):
@@ -104,6 +103,7 @@ if __name__ == "__main__":
     num_bands = 8
     cutoff_freq = 400  # hz
 
+    # Loop through input sound files
     for fp in files:
         y, sr = read_and_resample(fp)
         filters = create_bandpass_filters(num_bands, sr)
