@@ -18,6 +18,7 @@ from numpy.typing import NDArray
 from scipy.io import wavfile
 import os
 from abc import ABC, abstractmethod
+from metrics import evaluate_metrics
 
 
 class System(ABC):
@@ -143,7 +144,7 @@ def save_band_signals(signals, sample_rate, input_file, output_dir="output", inp
 
 
 if __name__ == "__main__":
-    files = ["../data/fox_white_noise.wav"]  # Add other audio files here
+    files = ["../data/fox_white_noise.wav"]
     num_bands = 8
     cutoff_freq = 400  # hz
     for fp in files:
