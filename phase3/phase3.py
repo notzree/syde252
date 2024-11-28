@@ -78,7 +78,8 @@ def generate_cosine(freq, signal_length, sr) -> NDArray[np.float64]:
 def create_channels(num_bands, signal_length, sr) -> List[Channel]:
     nyquist = sr / 2
     max_freq = 0.99 * nyquist
-    freq_range = np.linspace(100, max_freq, num_bands + 1)
+    # freq_range = np.linspace(100, max_freq, num_bands + 1)
+    freq_range = np.logspace(np.log10(100), np.log10(max_freq), num_bands + 1)
     channels: List[Channel] = []
     low_b, low_a = butter(N=4, Wn=2000 / (sr / 2), btype="low")
     for i in range(num_bands):
@@ -148,18 +149,14 @@ if __name__ == "__main__":
     for fp in files:
         y, sr = read_and_resample(fp)
         channels = create_channels(num_bands=num_bands, signal_length=len(y), sr=sr)
-
         # Process the input signal through each channel
         processed_signals = [channel.pass_signal(y) for channel in channels]
         save_band_signals(processed_signals, sr, fp, "phase3_output")
-        # Add all processed signals together
+        # combine + normalize signals
         combined_signal = np.sum(processed_signals, axis=0)
-
         max_abs_value = np.max(np.abs(combined_signal))
-        if max_abs_value == 0:
-            normalized_signal = combined_signal  # Prevent division by zero
-        normalized_signal = combined_signal / max_abs_value
-        save_band_signals([normalized_signal], sr, fp, "phase3_combined_output_2khz")
+        normalized_signal = combined_signal if max_abs_value == 0 else combined_signal / max_abs_value
 
-        # You can now use the combined_signal for further processing or output
+        save_band_signals([normalized_signal], sr, fp, "phase3_combined_output_logspace")
+
         print(f"Combined and normalized signal shape: {normalized_signal.shape}")
