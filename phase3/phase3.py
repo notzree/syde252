@@ -13,14 +13,15 @@ python phase3.py
 import librosa
 import numpy as np
 from scipy.signal import butter, lfilter
-from typing import List, Any
+from typing import List, Tuple
 from numpy.typing import NDArray
 from scipy.io import wavfile
 import os
 import pandas as pd
 from abc import ABC, abstractmethod
 from dataclasses import asdict
-from metrics import evaluate_metrics, Metrics
+from metrics import evaluate_metrics
+from dataclasses import dataclass
 
 
 class System(ABC):
@@ -46,11 +47,6 @@ class Rectifier(System):
 
     def output(self, signal):
         return np.abs(signal)
-
-
-from scipy.signal import butter, lfilter
-import numpy as np
-from abc import ABC, abstractmethod
 
 
 class EnvelopeDetector(System):
@@ -179,35 +175,132 @@ def read_and_resample(file_path):
     return y, sr
 
 
-class CochlearImplant(System):
-    def __init__(self, num_bands, signal_length, sr, lowpass_cutoff):
-        self.num_bands = num_bands
-        self.lowpass_cutoff = lowpass_cutoff
-        nyquist = sr / 2
-        max_freq = 0.99 * nyquist
-        # freq_range = np.linspace(100, max_freq, num_bands + 1)
-        freq_range = np.logspace(np.log10(100), np.log10(max_freq), num_bands + 1)
-        channels: List[Channel] = []
-        low_b, low_a = butter(N=4, Wn=lowpass_cutoff / (sr / 2), btype="low")
+@dataclass
+class FrequencyGeneratorReport:
+    spacing: str
+    overlap: int
+
+
+class FrequencyRangeGenerator(ABC):
+    @abstractmethod
+    def get_freq_tuple(self, i: int) -> Tuple[float, float]:
+        pass
+
+    @abstractmethod
+    def get_nyquist(self) -> float:
+        pass
+
+    @abstractmethod
+    def report(self) -> FrequencyGeneratorReport:
+        pass
+
+
+class LinearRangeGen(FrequencyRangeGenerator):
+    def __init__(self, sr, num_bands):
+        self.nyquist = sr / 2
+        max_freq = 0.99 * self.nyquist
+        self.freq_range = np.linspace(100, max_freq, num_bands + 1)
+
+    def get_freq_tuple(self, i: int) -> Tuple[float, float]:
+        return (self.freq_range[i] / self.nyquist, self.freq_range[i + 1] / self.nyquist)
+
+    def get_nyquist(self):
+        return self.nyquist
+
+    def report(self):
+        return FrequencyGeneratorReport(spacing="linear", overlap=0)
+
+
+class LogRangeGen(FrequencyRangeGenerator):
+    def __init__(self, sr, num_bands):
+        self.nyquist = sr / 2
+        max_freq = 0.99 * self.nyquist
+        self.freq_range = np.logspace(np.log10(100), np.log10(max_freq), num_bands + 1)
+
+    def get_freq_tuple(self, i: int) -> Tuple[float, float]:
+        return (self.freq_range[i] / self.nyquist, self.freq_range[i + 1] / self.nyquist)
+
+    def get_nyquist(self):
+        return self.nyquist
+
+    def report(self):
+        return FrequencyGeneratorReport(spacing="logarithmic", overlap=0)
+
+
+class OverlappingRangeGen(FrequencyRangeGenerator):
+    def __init__(self, sr: float, num_bands: int, overlap_percent: float, log: bool):
+        self.nyquist = sr / 2
+        self.overlap_percent = overlap_percent
+        self.log = log
+        max_freq = 0.99 * self.nyquist
+        min_freq = 100
+        if not 0 < overlap_percent <= 100:
+            raise ValueError("overlap_percent must be between 1 and 100")
+        # Convert percentage to fraction
+        overlap_fraction = overlap_percent / 100
+
+        # Calculate how many additional bands we need to account for overlap
+        # If bands overlap by 50%, we need 2x as many points to maintain num_bands
+        effective_points = num_bands / (1 - overlap_fraction)
+        if log:
+            all_freqs = np.logspace(np.log10(min_freq), np.log10(max_freq), int(np.ceil(effective_points)))
+        else:
+            all_freqs = all_freqs = np.linspace(min_freq, max_freq, int(np.ceil(effective_points)))
+
+        # Calculate the number of points to shift for each band
+        points_per_band = len(all_freqs) // num_bands
+
+        # Initialize arrays for lower and upper cutoff frequencies
+        lower_cutoffs = np.zeros(num_bands)
+        upper_cutoffs = np.zeros(num_bands)
+
         for i in range(num_bands):
-            low = freq_range[i] / nyquist
-            high = freq_range[i + 1] / nyquist
+            start_idx = int(i * points_per_band * (1 - overlap_fraction))
+            end_idx = start_idx + points_per_band
+
+            if end_idx > len(all_freqs):
+                end_idx = len(all_freqs)
+
+            lower_cutoffs[i] = all_freqs[start_idx] / self.nyquist
+            upper_cutoffs[i] = all_freqs[min(end_idx, len(all_freqs) - 1)] / self.nyquist
+        self.lower_cutoffs = lower_cutoffs
+        self.upper_cutoffs = upper_cutoffs
+
+    def get_freq_tuple(self, i):
+        return (self.lower_cutoffs[i], self.upper_cutoffs[i])
+
+    def get_nyquist(self):
+        return self.nyquist
+
+    def report(self):
+        spc = "logarithmic" if self.log else "linear"
+        return FrequencyGeneratorReport(spacing=spc, overlap=self.overlap_percent)
+
+
+class CochlearImplant(System):
+    def __init__(self, num_bands, signal_length, sr, lowpass_cutoff, fg: FrequencyRangeGenerator, sf: float):
+        nyquist = sr / 2
+        if nyquist != fg.get_nyquist():
+            raise ValueError(
+                f"expected frequency generator nyquist ({fg.get_nyquist()}) to match system nyquist ({nyquist})"
+            )
+        self.num_bands = num_bands
+        channels: List[Channel] = []
+
+        for i in range(num_bands):
+            low, high = fg.get_freq_tuple(i)
+            center_freq = (low * nyquist + high * nyquist) / 2  # un-normalized center-freq
             if 0 < low < 1 and 0 < high < 1:
-                b, a = butter(N=4, Wn=[low, high], btype="band")
-                bandpass_filter = Filter((b, a))  # Create Bandpass Filter
-                lowpass_filter = Filter((low_b, low_a))
-                rectifier = Rectifier()
-                center_freq = (freq_range[i] + freq_range[i + 1]) / 2
                 chan = Channel(center_freq, generate_cosine(center_freq, signal_length, sr))
+                bandpass_filter = Filter(butter(N=4, Wn=[low, high], btype="band"))  # Create Bandpass Filter
                 chan.add_system(bandpass_filter)
-                # envelope_detector = EnvelopeDetector(
-                #     sr=16000,
-                #     cutoff_freq=cutoff_freq,  # Adjust based on your signal characteristics
-                #     detector_type="peak",  # or 'rms' for RMS detection
-                # )
-                # chan.add_system(envelope_detector)
-                chan.add_system(rectifier)
-                chan.add_system(lowpass_filter)
+                ed = EnvelopeDetector(sr, lowpass_cutoff, 6, "rms", sf)
+                chan.add_system(ed)
+                # rectifier = Rectifier()
+                # chan.add_system(rectifier)
+                # low_b, low_a = butter(N=4, Wn=lowpass_cutoff / (sr / 2), btype="low")
+                # lowpass_filter = Filter((low_b, low_a))
+                # chan.add_system(lowpass_filter)
                 am = AmplitudeModulator(chan.cosine)
                 chan.add_system(am)
                 channels.append(chan)
@@ -220,11 +313,8 @@ class CochlearImplant(System):
         normalized_signal = combined_signal if max_abs_value == 0 else combined_signal / max_abs_value
         return normalized_signal
 
-    def add_metrics(self, metrics: Metrics) -> None:
-        self.metrics = metrics
 
-
-def save_band_signals(signals, sample_rate, input_file, output_dir="output", input_name=""):
+def save_band_signals(signals, sample_rate, input_file, output_dir="output", file_name=""):
     """
     Save each frequency band as a separate WAV file
     """
@@ -240,7 +330,7 @@ def save_band_signals(signals, sample_rate, input_file, output_dir="output", inp
         scaled_signal = np.int16(signal * 32767)
 
         # Generate output filename
-        name = f"{base_name}_band_{i}.wav" if not input_name else input_name
+        name = f"{base_name}_band_{i}.wav" if not file_name else file_name
         output_file = os.path.join(output_dir, name)
 
         # Save the file
@@ -248,50 +338,100 @@ def save_band_signals(signals, sample_rate, input_file, output_dir="output", inp
         print(f"Saved band {i} to {output_file}")
 
 
+@dataclass
+class TestingParams:
+    num_bands: int
+    cutoff_freq: int
+    overlap: int
+    spacing: str
+    pesq_score: float
+    snr_score: float
+    output_signal: List[float]
+
+    def __str__(self):
+        return (
+            f"number of bands: {self.num_bands:.3f}\n"
+            f"cutoff frequency: {self.cutoff_freq:.3f} hz\n"
+            f"overlap: {self.overlap}\n"
+            f"spacing: {self.spacing}\n"
+            f"PESQ Score: {self.pesq_score:.3f}\n"
+            f"SNR Score: {self.snr_score:.3f} dB\n"
+        )
+
+
+# helper function to return a list of all of our frequency generators
+def enumerate_frequency_generators(
+    low: int,
+    high: int,
+    step: int,
+    sr: int,
+    num_bands: int,
+):
+    generators: List[FrequencyRangeGenerator] = [LinearRangeGen(sr, num_bands), LogRangeGen(sr, num_bands)]
+    for overlap_percent in range(low, high, step):
+        for is_log in [True, False]:
+            overlap_generator = OverlappingRangeGen(
+                sr=sr, num_bands=num_bands, overlap_percent=overlap_percent, log=is_log
+            )
+            generators.append(overlap_generator)
+    return generators
+
+
 if __name__ == "__main__":
     output_dir = "output_csv"
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-    metrics_list: List[dict] = []
     files = ["../data/fox_white_noise.wav"]
-    LOW_BAND = 2
-    HIGH_BAND = 24
+    LOW_BAND = 20
+    HIGH_BAND = 30
     LOW_CUTOFF = 10
-    HIGH_CUTOFF = 200
-    # num_bands = 8
-    # cutoff_freq = 400  # hz
-    max_mean_score = 0
-    best_cutoff, best_bands = 0, 0
+    HIGH_CUTOFF = 150
+    LOW_OVERLAP = 4
+    HIGH_OVERLAP = 16
+    tracker: dict[str, TestingParams] = {}
     for fp in files:
+        metrics_list: List[dict] = []
+        max_mean_score = 0.0
+        best_cutoff, best_bands = 0, 0
         input_signal, sr = read_and_resample(fp)
-        implant = CochlearImplant(num_bands=20, signal_length=len(input_signal), sr=sr, lowpass_cutoff=90)
-        save_band_signals([implant.output(input_signal)], sr, fp, "best_output_combined")
-        # for num_bands in range(LOW_BAND, HIGH_BAND, 2):
-        #     for cutoff_freq in range(LOW_CUTOFF, HIGH_CUTOFF, 10):
-        #         implant = CochlearImplant(
-        #             num_bands=num_bands, signal_length=len(input_signal), sr=sr, lowpass_cutoff=cutoff_freq
-        #         )
-        #         output_signal = implant.output(input_signal)
-        #         output_signal = implant.output(input_signal)
-        #         metrics = evaluate_metrics(input_signal, output_signal, sr)
-        #         implant.add_metrics(metrics)
-        #         metrics_dict = asdict(implant.metrics)
-
-        #         # score_sum = 0
-        #         # for key, value in metrics_dict.items():
-        #         #     if key == "processing_time" or key == "mfcc_similarity":
-        #         #         continue
-        #         #     score_sum += value
-        #         # score_sum // 4
-        #         score_sum = metrics.pesq
-        #         if score_sum > max_mean_score:
-        #             best_bands, best_cutoff = num_bands, cutoff_freq
-        #             max_mean_score = score_sum
-        #         metrics_dict["num_bands"] = num_bands
-        #         metrics_dict["cutoff_freq"] = cutoff_freq
-        #         metrics_list.append(metrics_dict)
-        # metrics_df = pd.DataFrame(metrics_list)
-        # csv_file_path = os.path.join(output_dir, "implant_metrics.csv")
-        # metrics_df.to_csv(csv_file_path, index=False)
-        # print("BEST PESQ SCORE COMBINATION")
-        # print(max_mean_score, best_bands, best_cutoff)
+        tracker[fp] = TestingParams(-1, -1, 0, "", 0, 0, [])
+        for num_bands in range(LOW_BAND, HIGH_BAND, 2):
+            for cutoff_freq in range(LOW_CUTOFF, HIGH_CUTOFF, 100):
+                for fg in enumerate_frequency_generators(LOW_OVERLAP, HIGH_OVERLAP, 1, sr, num_bands):
+                    implant = CochlearImplant(
+                        num_bands=num_bands,
+                        signal_length=len(input_signal),
+                        sr=sr,
+                        lowpass_cutoff=cutoff_freq,
+                        fg=fg,
+                        sf=0.3,
+                    )
+                    output_signal = implant.output(input_signal)
+                    metrics = evaluate_metrics(input_signal, output_signal, sr)
+                    metrics_dict = asdict(metrics)
+                    metrics_dict["num_bands"] = num_bands
+                    metrics_dict["cutoff_freq"] = cutoff_freq
+                    fg_report = fg.report()
+                    metrics_dict["overlap"] = fg_report.overlap
+                    metrics_dict["spacing"] = fg_report.spacing
+                    metrics_list.append(metrics_dict)
+                    # maximize pesq score
+                    if metrics.pesq > tracker[fp].pesq_score:
+                        tp = TestingParams(
+                            num_bands,
+                            cutoff_freq,
+                            fg_report.overlap,
+                            fg_report.spacing,
+                            metrics.pesq,
+                            metrics.snr,
+                            output_signal,
+                        )
+                        tracker[fp] = tp
+                    print("pesq score", metrics.pesq)
+        metrics_df = pd.DataFrame(metrics_list)
+        # sanitized_fp = fp.replace("/","_")
+        csv_file_path = os.path.join(output_dir, "implant_metrics.csv")
+        metrics_df.to_csv(csv_file_path, index=False)
+        print("BEST PESQ SCORE COMBINATION")
+        print(tracker[fp])
+        save_band_signals([tracker[fp].output_signal], sr, fp, "best_combination_output", "best_output.wav")
