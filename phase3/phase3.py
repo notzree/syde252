@@ -22,6 +22,7 @@ from abc import ABC, abstractmethod
 from dataclasses import asdict
 from metrics import evaluate_metrics
 from dataclasses import dataclass
+import heapq
 import time
 
 
@@ -279,7 +280,9 @@ class OverlappingRangeGen(FrequencyRangeGenerator):
 
 
 class CochlearImplant(System):
-    def __init__(self, num_bands, signal_length, sr, lowpass_cutoff, fg: FrequencyRangeGenerator, sf: float):
+    def __init__(
+        self, num_bands, signal_length, sr, lowpass_cutoff, fg: FrequencyRangeGenerator, sf: float, pd_type: str
+    ):
         nyquist = sr / 2
         if nyquist != fg.get_nyquist():
             raise ValueError(
@@ -295,7 +298,7 @@ class CochlearImplant(System):
                 chan = Channel(center_freq, generate_cosine(center_freq, signal_length, sr))
                 bandpass_filter = Filter(butter(N=4, Wn=[low, high], btype="band"))  # Create Bandpass Filter
                 chan.add_system(bandpass_filter)
-                ed = EnvelopeDetector(sr, lowpass_cutoff, 6, "rms", sf)
+                ed = EnvelopeDetector(sr, lowpass_cutoff, 6, pd_type, sf)
                 chan.add_system(ed)
                 # rectifier = Rectifier()
                 # chan.add_system(rectifier)
@@ -361,6 +364,9 @@ class TestingParams:
             f"Processing Time: {self.processing_time:.3f} s"
         )
 
+    def __lt__(self, other: "TestingParams"):
+        return self.pesq_score < other.pesq_score
+
 
 # helper function to return a list of all of our frequency generators
 def enumerate_frequency_generators(
@@ -380,67 +386,101 @@ def enumerate_frequency_generators(
     return generators
 
 
+class TopKHeap:
+    def __init__(self, k):
+        self.k = k
+        self.heap: List[TestingParams] = []
+
+    def add(self, val):
+        if len(self.heap) < self.k:
+            heapq.heappush(self.heap, val)
+        elif val > self.heap[0]:
+            heapq.heapreplace(self.heap, val)
+
+    def get_top_k(self):
+        return sorted(self.heap, reverse=True)
+
+
 if __name__ == "__main__":
     output_dir = "output_csv"
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     files = ["../data/fox_white_noise.wav"]
-    LOW_BAND = 20
+    LOW_BAND = 6
     HIGH_BAND = 30
-    LOW_CUTOFF = 10
-    HIGH_CUTOFF = 150
-    LOW_OVERLAP = 4
-    HIGH_OVERLAP = 16
-    tracker: dict[str, TestingParams] = {}
+    LOW_CUTOFF = 100
+    HIGH_CUTOFF = 800
+    LOW_OVERLAP = 6
+    HIGH_OVERLAP = 12
+    tracker: dict[str, TopKHeap] = {}
     for fp in files:
         metrics_list: List[dict] = []
         max_mean_score = 0.0
         best_cutoff, best_bands = 0, 0
         input_signal, sr = read_and_resample(fp)
-        tracker[fp] = TestingParams(-1, -1, 0, "", 0, 0, 0, [])
+        tracker[fp] = TopKHeap(3)
         for num_bands in range(LOW_BAND, HIGH_BAND, 2):
             for cutoff_freq in range(LOW_CUTOFF, HIGH_CUTOFF, 100):
                 for fg in enumerate_frequency_generators(LOW_OVERLAP, HIGH_OVERLAP, 1, sr, num_bands):
-                    implant = CochlearImplant(
-                        num_bands=num_bands,
-                        signal_length=len(input_signal),
-                        sr=sr,
-                        lowpass_cutoff=cutoff_freq,
-                        fg=fg,
-                        sf=0.3,
-                    )
-                    start_time = time.time()
-                    output_signal = implant.output(input_signal)
-                    end_time = time.time()
-                    processing_time = end_time - start_time
-                    metrics = evaluate_metrics(input_signal, output_signal, sr)
-                    metrics_dict = asdict(metrics)
-                    metrics_dict["processing_time"] = processing_time
-                    metrics_dict["num_bands"] = num_bands
-                    metrics_dict["cutoff_freq"] = cutoff_freq
-                    fg_report = fg.report()
-                    metrics_dict["overlap"] = fg_report.overlap
-                    metrics_dict["spacing"] = fg_report.spacing
-                    metrics_list.append(metrics_dict)
-                    # maximize pesq score
-                    if metrics.pesq > tracker[fp].pesq_score:
-                        tp = TestingParams(
-                            num_bands,
-                            cutoff_freq,
-                            fg_report.overlap,
-                            fg_report.spacing,
-                            metrics.pesq,
-                            metrics.snr,
-                            processing_time,
-                            output_signal,
+                    for peak_detector_type in ["peak", "rms"]:
+                        implant = CochlearImplant(
+                            num_bands=num_bands,
+                            signal_length=len(input_signal),
+                            sr=sr,
+                            lowpass_cutoff=cutoff_freq,
+                            fg=fg,
+                            sf=0.3,
+                            pd_type=peak_detector_type,
                         )
-                        tracker[fp] = tp
-                    print("pesq score", metrics.pesq)
-                    print("time", processing_time)
+                        start_time = time.time()
+                        output_signal = implant.output(input_signal)
+                        end_time = time.time()
+                        processing_time = end_time - start_time
+                        metrics = evaluate_metrics(input_signal, output_signal, sr)
+                        metrics_dict = asdict(metrics)
+                        metrics_dict["processing_time"] = processing_time
+                        metrics_dict["num_bands"] = num_bands
+                        metrics_dict["cutoff_freq"] = cutoff_freq
+                        fg_report = fg.report()
+                        metrics_dict["overlap"] = fg_report.overlap
+                        metrics_dict["spacing"] = fg_report.spacing
+                        metrics_dict["peak_detector_type"] = peak_detector_type
+                        metrics_list.append(metrics_dict)
+                        # maximize pesq score
+                        tracker[fp].add(
+                            TestingParams(
+                                num_bands,
+                                cutoff_freq,
+                                fg_report.overlap,
+                                fg_report.spacing,
+                                metrics.pesq,
+                                metrics.snr,
+                                processing_time,
+                                output_signal,
+                            )
+                        )
+
+                        # if metrics.pesq > tracker[fp].pesq_score:
+                        # tp = TestingParams(
+                        #     num_bands,
+                        #     cutoff_freq,
+                        #     fg_report.overlap,
+                        #     fg_report.spacing,
+                        #     metrics.pesq,
+                        #     metrics.snr,
+                        #     processing_time,
+                        #     output_signal,
+                        # )
+                        #     tracker[fp] = tp
+                        print("pesq score", metrics.pesq)
+                        print("time", processing_time)
         metrics_df = pd.DataFrame(metrics_list)
-        # sanitized_fp = fp.replace("/","_")
-        csv_file_path = os.path.join(output_dir, "implant_metrics.csv")
+        sanitized_fp = fp.replace("/", "_")
+        csv_file_path = os.path.join(output_dir, f"{sanitized_fp}_implant_metrics.csv")
         metrics_df.to_csv(csv_file_path, index=False)
-        print("BEST PESQ SCORE COMBINATION")
-        print(tracker[fp])
-        save_band_signals([tracker[fp].output_signal], sr, fp, "best_combination_output", "best_output.wav")
+        print("Saving top 3 pesq scores...")
+        ts = []
+        for tp in tracker[fp].get_top_k():
+            print(tp)
+            ts.append(tp.output_signal)
+        save_band_signals(ts, sr, fp, "best_combination_output")
