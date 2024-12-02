@@ -1,6 +1,6 @@
 import librosa
 import numpy as np
-import time
+
 from dataclasses import dataclass
 from scipy.signal import welch
 from pesq import pesq
@@ -13,7 +13,6 @@ class Metrics:
     pesq: float
     mfcc_similarity: float
     freq_representation: float
-    processing_time: float
 
     def __str__(self) -> str:
         return (
@@ -22,7 +21,6 @@ class Metrics:
             f"PESQ Score: {self.pesq:.2f}\n"
             f"MFCC Similarity: {self.mfcc_similarity:.2f}\n"
             f"Frequency Representation: {self.freq_representation:.2f}\n"
-            f"Processing Time: {self.processing_time:.3f} s"
         )
 
 
@@ -72,20 +70,10 @@ def assess_frequency_representation(original_signal, processed_signal, sr):
     return retention_score
 
 
-def measure_processing_speed(func, *args, **kwargs):
-    start_time = time.time()
-    result = func(*args, **kwargs)
-    end_time = time.time()
-    processing_time = end_time - start_time
-    return result, processing_time
-
-
 def evaluate_metrics(original_signal, processed_signal, sr) -> Metrics:
     snr = calculate_snr(original_signal, processed_signal)
     mfcc_similarity = calculate_mfcc_similarity(original_signal, processed_signal, sr)
-    freq_representation, processing_time = measure_processing_speed(
-        assess_frequency_representation, original_signal, processed_signal, sr
-    )
+    freq_representation = assess_frequency_representation(original_signal, processed_signal, sr)
     pesq = calculate_pesq(original_signal, processed_signal, sr)
     spectral_distortion = calculate_spectral_distortion(original_signal, processed_signal, sr)
     return Metrics(
@@ -94,5 +82,4 @@ def evaluate_metrics(original_signal, processed_signal, sr) -> Metrics:
         pesq=pesq,
         spectral_distortion=spectral_distortion,
         freq_representation=freq_representation,
-        processing_time=processing_time,
     )

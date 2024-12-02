@@ -22,6 +22,7 @@ from abc import ABC, abstractmethod
 from dataclasses import asdict
 from metrics import evaluate_metrics
 from dataclasses import dataclass
+import time
 
 
 class System(ABC):
@@ -56,7 +57,7 @@ class EnvelopeDetector(System):
         cutoff_freq: float = 150.0,
         filter_order: int = 4,
         detector_type: str = "peak",
-        smoothing_factor: float = 0.1,
+        smoothing_factor: float = 0.3,
     ):
         """
         Initialize envelope detector with configurable parameters.
@@ -346,6 +347,7 @@ class TestingParams:
     spacing: str
     pesq_score: float
     snr_score: float
+    processing_time: float
     output_signal: List[float]
 
     def __str__(self):
@@ -356,6 +358,7 @@ class TestingParams:
             f"spacing: {self.spacing}\n"
             f"PESQ Score: {self.pesq_score:.3f}\n"
             f"SNR Score: {self.snr_score:.3f} dB\n"
+            f"Processing Time: {self.processing_time:.3f} s"
         )
 
 
@@ -394,7 +397,7 @@ if __name__ == "__main__":
         max_mean_score = 0.0
         best_cutoff, best_bands = 0, 0
         input_signal, sr = read_and_resample(fp)
-        tracker[fp] = TestingParams(-1, -1, 0, "", 0, 0, [])
+        tracker[fp] = TestingParams(-1, -1, 0, "", 0, 0, 0, [])
         for num_bands in range(LOW_BAND, HIGH_BAND, 2):
             for cutoff_freq in range(LOW_CUTOFF, HIGH_CUTOFF, 100):
                 for fg in enumerate_frequency_generators(LOW_OVERLAP, HIGH_OVERLAP, 1, sr, num_bands):
@@ -406,9 +409,13 @@ if __name__ == "__main__":
                         fg=fg,
                         sf=0.3,
                     )
+                    start_time = time.time()
                     output_signal = implant.output(input_signal)
+                    end_time = time.time()
+                    processing_time = end_time - start_time
                     metrics = evaluate_metrics(input_signal, output_signal, sr)
                     metrics_dict = asdict(metrics)
+                    metrics_dict["processing_time"] = processing_time
                     metrics_dict["num_bands"] = num_bands
                     metrics_dict["cutoff_freq"] = cutoff_freq
                     fg_report = fg.report()
@@ -424,10 +431,12 @@ if __name__ == "__main__":
                             fg_report.spacing,
                             metrics.pesq,
                             metrics.snr,
+                            processing_time,
                             output_signal,
                         )
                         tracker[fp] = tp
                     print("pesq score", metrics.pesq)
+                    print("time", processing_time)
         metrics_df = pd.DataFrame(metrics_list)
         # sanitized_fp = fp.replace("/","_")
         csv_file_path = os.path.join(output_dir, "implant_metrics.csv")
