@@ -300,11 +300,6 @@ class CochlearImplant(System):
                 chan.add_system(bandpass_filter)
                 ed = EnvelopeDetector(sr, lowpass_cutoff, 6, pd_type, sf)
                 chan.add_system(ed)
-                # rectifier = Rectifier()
-                # chan.add_system(rectifier)
-                # low_b, low_a = butter(N=4, Wn=lowpass_cutoff / (sr / 2), btype="low")
-                # lowpass_filter = Filter((low_b, low_a))
-                # chan.add_system(lowpass_filter)
                 am = AmplitudeModulator(chan.cosine)
                 chan.add_system(am)
                 channels.append(chan)
@@ -330,24 +325,23 @@ def save_band_signals(signals, sample_rate, input_file, output_dir="output", fil
 
     # Save each band
     for i, signal in enumerate(signals):
-        # Scale the signal to 16-bit integer range
         scaled_signal = np.int16(signal * 32767)
 
-        # Generate output filename
         name = f"{base_name}_band_{i}.wav" if not file_name else file_name
         output_file = os.path.join(output_dir, name)
 
-        # Save the file
         wavfile.write(output_file, sample_rate, scaled_signal)
         print(f"Saved band {i} to {output_file}")
 
 
 @dataclass
 class TestingParams:
+    overall_score: float
     num_bands: int
     cutoff_freq: int
     overlap: int
     spacing: str
+    peak_detection_type: str
     pesq_score: float
     snr_score: float
     processing_time: float
@@ -355,6 +349,7 @@ class TestingParams:
 
     def __str__(self):
         return (
+            f"overall_score: {self.num_bands:.3f}\n"
             f"number of bands: {self.num_bands:.3f}\n"
             f"cutoff frequency: {self.cutoff_freq:.3f} hz\n"
             f"overlap: {self.overlap}\n"
@@ -405,24 +400,40 @@ if __name__ == "__main__":
     output_dir = "output_csv"
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-    files = ["../data/fox_white_noise.wav"]
-    LOW_BAND = 6
+    files = [
+        "../data/female_another_speaker.wav",
+        "../data/female_cafe.wav",
+        "../data/female_quiet.wav",
+        "../data/female_reverb.wav",
+        "../data/female_white_noise.wav",
+        "../data/male_another_speaker.wav",
+        "../data/male_cafe.wav",
+        "../data/male_quiet.wav",
+        "../data/male_reverb.wav",
+        "../data/male_white_noise.wav",
+    ]
+    LOW_BAND = 8
     HIGH_BAND = 30
     LOW_CUTOFF = 100
-    HIGH_CUTOFF = 800
+    HIGH_CUTOFF = 700
     LOW_OVERLAP = 6
     HIGH_OVERLAP = 12
     tracker: dict[str, TopKHeap] = {}
+    saved_signals: List[dict] = []
     for fp in files:
+        print(f"starting analysis on {fp}")
         metrics_list: List[dict] = []
         max_mean_score = 0.0
         best_cutoff, best_bands = 0, 0
         input_signal, sr = read_and_resample(fp)
         tracker[fp] = TopKHeap(3)
-        for num_bands in range(LOW_BAND, HIGH_BAND, 2):
-            for cutoff_freq in range(LOW_CUTOFF, HIGH_CUTOFF, 100):
-                for fg in enumerate_frequency_generators(LOW_OVERLAP, HIGH_OVERLAP, 1, sr, num_bands):
-                    for peak_detector_type in ["peak", "rms"]:
+
+        for num_bands in range(LOW_BAND, HIGH_BAND, 2):  # 12
+            for cutoff_freq in range(LOW_CUTOFF, HIGH_CUTOFF, 100):  # 7
+                for fg in enumerate_frequency_generators(
+                    LOW_OVERLAP, HIGH_OVERLAP, 1, sr, num_bands
+                ):  # 2 + 2 * (6) = 14
+                    for peak_detector_type in ["peak", "rms"]:  # 2
                         implant = CochlearImplant(
                             num_bands=num_bands,
                             signal_length=len(input_signal),
@@ -446,41 +457,40 @@ if __name__ == "__main__":
                         metrics_dict["spacing"] = fg_report.spacing
                         metrics_dict["peak_detector_type"] = peak_detector_type
                         metrics_list.append(metrics_dict)
-                        # maximize pesq score
                         tracker[fp].add(
                             TestingParams(
+                                (
+                                    0.6 * metrics.pesq
+                                    + 0.15 * metrics.freq_representation
+                                    + 0.2 * metrics.snr  # negative snr would result in lower score
+                                    + 0.05 * (1 - processing_time)
+                                ),
                                 num_bands,
                                 cutoff_freq,
                                 fg_report.overlap,
                                 fg_report.spacing,
+                                peak_detector_type,
                                 metrics.pesq,
                                 metrics.snr,
                                 processing_time,
                                 output_signal,
                             )
                         )
-
-                        # if metrics.pesq > tracker[fp].pesq_score:
-                        # tp = TestingParams(
-                        #     num_bands,
-                        #     cutoff_freq,
-                        #     fg_report.overlap,
-                        #     fg_report.spacing,
-                        #     metrics.pesq,
-                        #     metrics.snr,
-                        #     processing_time,
-                        #     output_signal,
-                        # )
-                        #     tracker[fp] = tp
-                        print("pesq score", metrics.pesq)
-                        print("time", processing_time)
         metrics_df = pd.DataFrame(metrics_list)
         sanitized_fp = fp.replace("/", "_")
         csv_file_path = os.path.join(output_dir, f"{sanitized_fp}_implant_metrics.csv")
         metrics_df.to_csv(csv_file_path, index=False)
         print("Saving top 3 pesq scores...")
-        ts = []
+        ts = []  # top signals
         for tp in tracker[fp].get_top_k():
             print(tp)
             ts.append(tp.output_signal)
-        save_band_signals(ts, sr, fp, "best_combination_output")
+            saved_signal_params = asdict(tp)
+            saved_signal_params.pop("output_signal", None)  # don't need to record the signal
+            saved_signal_params["file"] = fp
+            saved_signals.append(saved_signal_params)
+
+        save_band_signals(ts, sr, fp, f"{sanitized_fp}_top3_output")
+
+    saved_sigals_df = pd.DataFrame(saved_signals)
+    saved_sigals_df.to_csv(output_dir, "final_saved_signal_data.csv")
