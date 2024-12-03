@@ -428,12 +428,13 @@ if __name__ == "__main__":
         input_signal, sr = read_and_resample(fp)
         tracker[fp] = TopKHeap(3)
 
-        for num_bands in range(LOW_BAND, HIGH_BAND, 2):  # 12
-            for cutoff_freq in range(LOW_CUTOFF, HIGH_CUTOFF, 100):  # 7
+        for num_bands in range(LOW_BAND, HIGH_BAND, 2):  # 11
+            for cutoff_freq in range(LOW_CUTOFF, HIGH_CUTOFF, 100):  # 6
                 for fg in enumerate_frequency_generators(
                     LOW_OVERLAP, HIGH_OVERLAP, 1, sr, num_bands
                 ):  # 2 + 2 * (6) = 14
                     for peak_detector_type in ["peak", "rms"]:  # 2
+                        # TOtal 11 * 6 * 14 * 2 = 1848 configurations / file
                         implant = CochlearImplant(
                             num_bands=num_bands,
                             signal_length=len(input_signal),
